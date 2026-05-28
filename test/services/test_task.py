@@ -1,66 +1,61 @@
-import unittest
 import os
-import sys
+import shutil
+import tempfile
+import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-# add project root to python path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from app.services import task as task_service
+from app.utils import utils
 
-from app.services import task as tm
-from app.models.schema import MaterialInfo, VideoParams
-
-resources_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources")
 
 class TestTaskService(unittest.TestCase):
-    def setUp(self):
-        pass
-    
-    def tearDown(self):
-        pass
-    
-    def test_task_local_materials(self):
-        task_id = "00000000-0000-0000-0000-000000000000"
-        video_materials=[]
-        for i in range(1, 4):
-            video_materials.append(MaterialInfo(
-                provider="local",
-                url=os.path.join(resources_dir, f"{i}.png"),
-                duration=0
-            ))
-
-        params = VideoParams(
-            video_subject="金钱的作用",
-            video_script="金钱不仅是交换媒介，更是社会资源的分配工具。它能满足基本生存需求，如食物和住房，也能提供教育、医疗等提升生活品质的机会。拥有足够的金钱意味着更多选择权，比如职业自由或创业可能。但金钱的作用也有边界，它无法直接购买幸福、健康或真诚的人际关系。过度追逐财富可能导致价值观扭曲，忽视精神层面的需求。理想的状态是理性看待金钱，将其作为实现目标的工具而非终极目的。",
-            video_terms="money importance, wealth and society, financial freedom, money and happiness, role of money",
-            video_aspect="9:16",
-            video_concat_mode="random",
-            video_transition_mode="None",
-            video_clip_duration=3,
-            video_count=1,
-            video_source="local",
-            video_materials=video_materials,
-            video_language="",
-            voice_name="zh-CN-XiaoxiaoNeural-Female",
-            voice_volume=1.0,
-            voice_rate=1.0,
-            bgm_type="random",
-            bgm_file="",
-            bgm_volume=0.2,
-            subtitle_enabled=True,
-            subtitle_position="bottom",
-            custom_position=70.0,
-            font_name="MicrosoftYaHeiBold.ttc",
-            text_fore_color="#FFFFFF",
-            text_background_color=True,
-            font_size=60,
-            stroke_color="#000000",
-            stroke_width=1.5,
-            n_threads=2,
-            paragraph_number=1
+    def test_generate_subtitle_accepts_edited_subtitle_inside_task_dir(self):
+        task_id = "custom-subtitle-test"
+        task_dir = utils.task_dir(task_id)
+        subtitle_path = Path(task_dir) / "subtitle-edited.srt"
+        subtitle_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nedited text\n",
+            encoding="utf-8",
         )
-        result = tm.start(task_id=task_id, params=params)
-        print(result)
-    
+        params = SimpleNamespace(
+            subtitle_enabled=True,
+            custom_subtitle_file=str(subtitle_path),
+        )
+
+        try:
+            result = task_service.generate_subtitle(
+                task_id, params, "script", sub_maker=None, audio_file=""
+            )
+        finally:
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+        self.assertEqual(result, str(subtitle_path))
+
+    def test_generate_subtitle_rejects_edited_subtitle_outside_task_dir(self):
+        task_id = "unsafe-subtitle-test"
+        task_dir = utils.task_dir(task_id)
+        params = None
+
+        with tempfile.NamedTemporaryFile(suffix=".srt", delete=False) as temp_file:
+            temp_file.write(
+                b"1\n00:00:00,000 --> 00:00:01,000\noutside\n"
+            )
+            params = SimpleNamespace(
+                subtitle_enabled=True,
+                custom_subtitle_file=temp_file.name,
+            )
+
+        try:
+            result = task_service.generate_subtitle(
+                task_id, params, "script", sub_maker=None, audio_file=""
+            )
+        finally:
+            os.remove(params.custom_subtitle_file)
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+        self.assertEqual(result, "")
+
 
 if __name__ == "__main__":
-    unittest.main() 
+    unittest.main()

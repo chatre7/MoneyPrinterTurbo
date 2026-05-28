@@ -173,6 +173,48 @@ class TestVideoService(unittest.TestCase):
         ), patch.dict(sys.modules, {"imageio_ffmpeg": fake_imageio_ffmpeg}):
             self.assertEqual(vd.get_ffmpeg_binary(), "/tmp/bundled-ffmpeg")
 
+    def test_thai_subtitle_font_falls_back_from_default_cjk_font(self):
+        """
+        Thai subtitles must not be rendered with the default CJK fonts, because
+        those fonts do not provide Thai glyphs reliably in MoviePy/TextClip.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subtitle_path = Path(tmp_dir) / "thai.srt"
+            subtitle_path.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nสวัสดีครับ\n",
+                encoding="utf-8",
+            )
+
+            font_path = vd._resolve_subtitle_font_path(
+                font_name="MicrosoftYaHeiBold.ttc",
+                subtitle_path=str(subtitle_path),
+            )
+
+        self.assertEqual(os.path.basename(font_path), "NotoSansThai-Regular.ttf")
+
+    def test_existing_non_thai_subtitle_keeps_selected_font(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subtitle_path = Path(tmp_dir) / "english.srt"
+            subtitle_path.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nHello world\n",
+                encoding="utf-8",
+            )
+
+            font_path = vd._resolve_subtitle_font_path(
+                font_name="NotoSansThai-Bold.ttf",
+                subtitle_path=str(subtitle_path),
+            )
+
+        self.assertEqual(os.path.basename(font_path), "NotoSansThai-Bold.ttf")
+
+    def test_missing_selected_subtitle_font_uses_default_font(self):
+        font_path = vd._resolve_subtitle_font_path(
+            font_name="MissingFont.ttf",
+            subtitle_path="",
+        )
+
+        self.assertEqual(os.path.basename(font_path), "NotoSansThai-Regular.ttf")
+
     def test_open_video_clip_quietly_suppresses_moviepy_stdout(self):
         """
         MoviePy 2.1.x 的 FFMPEG_VideoReader 会直接向 stdout 打印 metadata
@@ -230,7 +272,7 @@ class TestVideoService(unittest.TestCase):
     def test_wrap_text(self):
         """test text wrapping function"""
         try:
-            font_path = os.path.join(utils.font_dir(), "STHeitiMedium.ttc")
+            font_path = os.path.join(utils.font_dir(), "NotoSansThai-Regular.ttf")
             if not os.path.exists(font_path):
                 self.fail(f"font file not found: {font_path}")
                 

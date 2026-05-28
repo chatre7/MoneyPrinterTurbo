@@ -45,6 +45,10 @@ class TestVoiceService(unittest.TestCase):
     def tearDown(self):
         self.loop.close()
     
+    @unittest.skipUnless(
+        vs.config.siliconflow.get("api_key"),
+        "SiliconFlow API key is not set",
+    )
     def test_siliconflow(self):
         voice_name = "siliconflow:FunAudioLLM/CosyVoice2-0.5B:alex-Male"
         voice_name = vs.parse_voice_name(voice_name)
@@ -191,6 +195,10 @@ class TestVoiceService(unittest.TestCase):
         self.assertIsNone(sub_maker)
         self.assertLess(elapsed, 2)
 
+    @unittest.skipUnless(
+        vs.config.azure.get("speech_key") and vs.config.azure.get("speech_region"),
+        "Azure speech key or region is not set",
+    )
     def test_azure_tts_v2(self):
         voice_name = "zh-CN-XiaoxiaoMultilingualNeural-V2-Female"
         voice_name = vs.parse_voice_name(voice_name)
@@ -314,6 +322,43 @@ class TestVoiceService(unittest.TestCase):
             subtitle_content = Path(subtitle_path).read_text(encoding="utf-8")
             self.assertIn("Gemini subtitle generation should work now", subtitle_content)
             self.assertIn("Testing multiple lines", subtitle_content)
+
+    def test_create_subtitle_splits_long_thai_paragraph(self):
+        """
+        Thai scripts may not contain sentence-ending punctuation. They still
+        need subtitle-sized target lines, otherwise one cue covers the whole
+        video and fills the screen.
+        """
+        text = (
+            "โครงการไทยช่วยไทย พลัส คือมาตรการกระตุ้นเศรษฐกิจที่มุ่งเน้นการช่วยเหลือประชาชน "
+            "และผู้ประกอบการ โดยภาครัฐจะร่วมสนับสนุนค่าใช้จ่ายตามสัดส่วนที่กำหนด "
+            "เพื่อลดภาระค่าครองชีพและเพิ่มกำลังซื้อให้กับประชาชน"
+        )
+
+        cues = []
+        elapsed = 0.0
+        for index, word in enumerate(text.split()):
+            cues.append(
+                SimpleNamespace(
+                    content=word if index == 0 else f" {word}",
+                    start=timedelta(seconds=elapsed),
+                    end=timedelta(seconds=elapsed + 0.5),
+                )
+            )
+            elapsed += 0.5
+        sub_maker = SimpleNamespace(cues=cues)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subtitle_file = Path(tmp_dir) / "thai.srt"
+            vs.create_subtitle(
+                sub_maker=sub_maker,
+                text=text,
+                subtitle_file=str(subtitle_file),
+            )
+            subtitle_text = subtitle_file.read_text(encoding="utf-8")
+
+        self.assertGreater(subtitle_text.count("-->"), 1)
+        self.assertNotIn(text, subtitle_text)
 
     def test_script_split_keeps_thousand_separator_comma(self):
         """

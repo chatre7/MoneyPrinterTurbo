@@ -10,6 +10,7 @@ from app.models import const
 from app.models.schema import VideoConcatMode, VideoParams
 from app.services import llm, material, subtitle, video, voice, upload_post
 from app.services import state as sm
+from app.utils import file_security
 from app.utils import utils
 
 
@@ -132,7 +133,30 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
         - subtitle_path: path to the generated subtitle file
     '''
     logger.info("\n\n## generating subtitle")
-    if not params.subtitle_enabled or sub_maker is None:
+    if not params.subtitle_enabled:
+        return ""
+
+    custom_subtitle_file = getattr(params, "custom_subtitle_file", None)
+    if custom_subtitle_file:
+        try:
+            custom_subtitle_path = file_security.resolve_path_within_directory(
+                utils.task_dir(task_id), custom_subtitle_file
+            )
+        except ValueError as exc:
+            logger.warning(
+                f"invalid custom subtitle file: {custom_subtitle_file}, "
+                f"error: {str(exc)}"
+            )
+            return ""
+
+        if subtitle.file_to_subtitles(custom_subtitle_path):
+            logger.info(f"using custom subtitle file: {custom_subtitle_path}")
+            return custom_subtitle_path
+
+        logger.warning(f"custom subtitle file is invalid: {custom_subtitle_path}")
+        return ""
+
+    if sub_maker is None:
         return ""
 
     subtitle_path = path.join(utils.task_dir(task_id), "subtitle.srt")
@@ -317,9 +341,10 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=40)
 
     # 5. Get video materials
-    downloaded_videos = get_video_materials(
-        task_id, params, video_terms, audio_duration
-    )
+    preview_duration = int(getattr(params, "preview_duration", 0) or 0)
+    render_duration = min(audio_duration, preview_duration) if preview_duration else audio_duration
+
+    downloaded_videos = get_video_materials(task_id, params, video_terms, render_duration)
     if not downloaded_videos:
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
         return

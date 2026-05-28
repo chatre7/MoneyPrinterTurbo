@@ -22,7 +22,7 @@ from app.models.schema import (
     VideoParams,
     VideoTransitionMode,
 )
-from app.services import llm, voice
+from app.services import llm, subtitle, voice
 from app.services import task as tm
 from app.utils import utils
 
@@ -69,9 +69,16 @@ if "ui_language" not in st.session_state:
 if "local_video_materials" not in st.session_state:
     # 记住用户最近一次已经落盘的本地素材，避免仅修改文案后二次生成时丢失素材列表。
     st.session_state["local_video_materials"] = []
+if "subtitle_editor_text" not in st.session_state:
+    st.session_state["subtitle_editor_text"] = ""
+if "subtitle_editor_task_id" not in st.session_state:
+    st.session_state["subtitle_editor_task_id"] = ""
 
 # 加载语言文件
 locales = utils.load_locales(i18n_dir)
+if st.session_state["ui_language"] not in locales:
+    st.session_state["ui_language"] = "en"
+    config.ui["language"] = "en"
 
 # 创建一个顶部栏，包含标题和语言选择
 title_col, lang_col = st.columns([3, 1])
@@ -129,6 +136,176 @@ def get_all_songs():
             if file.endswith(".mp3"):
                 songs.append(file)
     return songs
+
+
+VIDEO_TEMPLATES = {
+    "short_news": {
+        "label": "Short News",
+        "settings": {
+            "video_aspect": VideoAspect.portrait.value,
+            "video_concat_mode": VideoConcatMode.sequential.value,
+            "video_transition_mode": "none",
+            "video_clip_duration": 3,
+            "video_count": 1,
+            "bgm_type": "",
+            "bgm_volume": 0.1,
+            "subtitle_enabled": True,
+            "text_background_color": False,
+            "font_size": 60,
+        },
+    },
+    "knowledge": {
+        "label": "Knowledge",
+        "settings": {
+            "video_aspect": VideoAspect.portrait.value,
+            "video_concat_mode": VideoConcatMode.sequential.value,
+            "video_transition_mode": VideoTransitionMode.fade_in.value,
+            "video_clip_duration": 4,
+            "video_count": 1,
+            "bgm_type": "random",
+            "bgm_volume": 0.2,
+            "subtitle_enabled": True,
+            "text_background_color": False,
+            "font_size": 58,
+        },
+    },
+    "product_promo": {
+        "label": "Product Promo",
+        "settings": {
+            "video_aspect": VideoAspect.portrait.value,
+            "video_concat_mode": VideoConcatMode.random.value,
+            "video_transition_mode": VideoTransitionMode.shuffle.value,
+            "video_clip_duration": 3,
+            "video_count": 1,
+            "bgm_type": "random",
+            "bgm_volume": 0.3,
+            "subtitle_enabled": True,
+            "text_background_color": True,
+            "font_size": 62,
+        },
+    },
+    "viral_reels": {
+        "label": "TikTok/Reels Viral",
+        "settings": {
+            "video_aspect": VideoAspect.portrait.value,
+            "video_concat_mode": VideoConcatMode.random.value,
+            "video_transition_mode": VideoTransitionMode.shuffle.value,
+            "video_clip_duration": 2,
+            "video_count": 1,
+            "bgm_type": "random",
+            "bgm_volume": 0.4,
+            "subtitle_enabled": True,
+            "text_background_color": True,
+            "font_size": 68,
+        },
+    },
+    "thai_video": {
+        "label": "Thai Video",
+        "settings": {
+            "video_language": "th-TH",
+            "voice_name": "th-TH-PremwadeeNeural-Female",
+            "font_name": "NotoSansThai-Regular.ttf",
+            "video_aspect": VideoAspect.portrait.value,
+            "video_concat_mode": VideoConcatMode.random.value,
+            "video_transition_mode": "none",
+            "video_clip_duration": 3,
+            "video_count": 1,
+            "bgm_type": "random",
+            "bgm_volume": 0.2,
+            "subtitle_enabled": True,
+            "text_background_color": False,
+            "font_size": 60,
+        },
+    },
+    "no_subtitle": {
+        "label": "No Subtitle",
+        "settings": {"subtitle_enabled": False},
+    },
+    "subtitle_clean": {
+        "label": "Subtitle Clean",
+        "settings": {
+            "subtitle_enabled": True,
+            "text_background_color": False,
+            "stroke_width": 1.5,
+            "font_size": 60,
+        },
+    },
+    "subtitle_background": {
+        "label": "Subtitle With Background",
+        "settings": {
+            "subtitle_enabled": True,
+            "text_background_color": True,
+            "stroke_width": 1.0,
+            "font_size": 60,
+        },
+    },
+}
+
+
+def option_index(options, value, default=0):
+    for index, option in enumerate(options):
+        candidate = option[1] if isinstance(option, tuple) else option
+        if candidate is None and value in (None, "", "none"):
+            return index
+        if candidate == value:
+            return index
+    return default
+
+
+def save_uploaded_audio_file(task_id, params, uploaded_audio):
+    if not uploaded_audio:
+        return
+
+    task_dir = utils.task_dir(task_id)
+    _, audio_ext = os.path.splitext(os.path.basename(uploaded_audio.name))
+    audio_ext = audio_ext.lower() or ".mp3"
+    custom_audio_path = os.path.join(task_dir, f"custom-audio{audio_ext}")
+    with open(custom_audio_path, "wb") as f:
+        f.write(uploaded_audio.getbuffer())
+    params.custom_audio_file = custom_audio_path
+
+
+def attach_local_materials(params, uploaded_local_files):
+    if uploaded_local_files:
+        local_videos_dir = utils.storage_dir("local_videos", create=True)
+        params.video_materials = []
+        persisted_local_materials = []
+        for file in uploaded_local_files:
+            file_path = os.path.join(local_videos_dir, f"{file.file_id}_{file.name}")
+            with open(file_path, "wb") as f:
+                f.write(file.getbuffer())
+                m = MaterialInfo()
+                m.provider = "local"
+                m.url = file_path
+                params.video_materials.append(m)
+                persisted_local_materials.append(
+                    {
+                        "provider": m.provider,
+                        "url": m.url,
+                        "duration": m.duration,
+                    }
+                )
+        st.session_state["local_video_materials"] = persisted_local_materials
+    elif params.video_source == "local" and st.session_state["local_video_materials"]:
+        params.video_materials = []
+        for material in st.session_state["local_video_materials"]:
+            m = MaterialInfo()
+            m.provider = material.get("provider", "local")
+            m.url = material.get("url", "")
+            m.duration = material.get("duration", 0)
+            if m.url:
+                params.video_materials.append(m)
+
+
+def attach_edited_subtitle(task_id, params):
+    subtitle_text = st.session_state.get("subtitle_editor_text", "").strip()
+    if not params.subtitle_enabled or not subtitle_text:
+        return
+
+    subtitle_path = os.path.join(utils.task_dir(task_id), "subtitle-edited.srt")
+    with open(subtitle_path, "w", encoding="utf-8") as f:
+        f.write(subtitle_text + "\n")
+    params.custom_subtitle_file = subtitle_path
 
 
 def open_task_folder(task_id):
@@ -511,6 +688,21 @@ params = VideoParams(video_subject="")
 uploaded_files = []
 uploaded_audio_file = None
 
+with st.container(border=True):
+    template_cols = st.columns([0.7, 0.3])
+    template_keys = list(VIDEO_TEMPLATES.keys())
+    selected_template_key = template_cols[0].selectbox(
+        tr("Video Template"),
+        options=template_keys,
+        format_func=lambda key: tr(VIDEO_TEMPLATES[key]["label"]),
+    )
+    if template_cols[1].button(tr("Apply Template"), use_container_width=True):
+        for key, value in VIDEO_TEMPLATES[selected_template_key]["settings"].items():
+            config.ui[key] = value
+        config.save_config()
+        st.toast(tr("Template Applied"))
+        st.rerun()
+
 with left_panel:
     with st.container(border=True):
         st.write(tr("Video Script Settings"))
@@ -526,9 +718,10 @@ with left_panel:
         for code in support_locales:
             video_languages.append((code, code))
 
+        saved_video_language = config.ui.get("video_language", "")
         selected_index = st.selectbox(
             tr("Script Language"),
-            index=0,
+            index=option_index(video_languages, saved_video_language, 0),
             options=range(
                 len(video_languages)
             ),  # Use the index as the internal option value
@@ -537,6 +730,7 @@ with left_panel:
             ],  # The label is displayed to the user
         )
         params.video_language = video_languages[selected_index][1]
+        config.ui["video_language"] = params.video_language
 
         if st.button(
             tr("Generate Video Script and Keywords"), key="auto_generate_script"
@@ -611,9 +805,10 @@ with middle_panel:
                 accept_multiple_files=True,
             )
 
+        saved_concat_mode = config.ui.get("video_concat_mode", VideoConcatMode.random.value)
         selected_index = st.selectbox(
             tr("Video Concat Mode"),
-            index=1,
+            index=option_index(video_concat_modes, saved_concat_mode, 1),
             options=range(
                 len(video_concat_modes)
             ),  # Use the index as the internal option value
@@ -624,6 +819,7 @@ with middle_panel:
         params.video_concat_mode = VideoConcatMode(
             video_concat_modes[selected_index][1]
         )
+        config.ui["video_concat_mode"] = params.video_concat_mode.value
 
         # 视频转场模式
         video_transition_modes = [
@@ -634,22 +830,28 @@ with middle_panel:
             (tr("SlideIn"), VideoTransitionMode.slide_in.value),
             (tr("SlideOut"), VideoTransitionMode.slide_out.value),
         ]
+        saved_transition_mode = config.ui.get(
+            "video_transition_mode", "none"
+        )
         selected_index = st.selectbox(
             tr("Video Transition Mode"),
             options=range(len(video_transition_modes)),
             format_func=lambda x: video_transition_modes[x][0],
-            index=0,
+            index=option_index(video_transition_modes, saved_transition_mode, 0),
         )
         params.video_transition_mode = VideoTransitionMode(
             video_transition_modes[selected_index][1]
         )
+        config.ui["video_transition_mode"] = params.video_transition_mode.value or "none"
 
         video_aspect_ratios = [
             (tr("Portrait"), VideoAspect.portrait.value),
             (tr("Landscape"), VideoAspect.landscape.value),
         ]
+        saved_video_aspect = config.ui.get("video_aspect", VideoAspect.portrait.value)
         selected_index = st.selectbox(
             tr("Video Ratio"),
+            index=option_index(video_aspect_ratios, saved_video_aspect, 0),
             options=range(
                 len(video_aspect_ratios)
             ),  # Use the index as the internal option value
@@ -658,15 +860,24 @@ with middle_panel:
             ],  # The label is displayed to the user
         )
         params.video_aspect = VideoAspect(video_aspect_ratios[selected_index][1])
+        config.ui["video_aspect"] = params.video_aspect.value
 
+        video_clip_duration_options = [2, 3, 4, 5, 6, 7, 8, 9, 10]
+        saved_video_clip_duration = config.ui.get("video_clip_duration", 3)
         params.video_clip_duration = st.selectbox(
-            tr("Clip Duration"), options=[2, 3, 4, 5, 6, 7, 8, 9, 10], index=1
+            tr("Clip Duration"),
+            options=video_clip_duration_options,
+            index=option_index(video_clip_duration_options, saved_video_clip_duration, 1),
         )
+        config.ui["video_clip_duration"] = params.video_clip_duration
+        video_count_options = [1, 2, 3, 4, 5]
+        saved_video_count = config.ui.get("video_count", 1)
         params.video_count = st.selectbox(
             tr("Number of Videos Generated Simultaneously"),
-            options=[1, 2, 3, 4, 5],
-            index=0,
+            options=video_count_options,
+            index=option_index(video_count_options, saved_video_count, 0),
         )
+        config.ui["video_count"] = params.video_count
     with st.container(border=True):
         st.write(tr("Audio Settings"))
 
@@ -848,17 +1059,23 @@ with middle_panel:
 
             config.siliconflow["api_key"] = siliconflow_api_key
 
+        voice_volume_options = [0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0]
+        saved_voice_volume = config.ui.get("voice_volume", 1.0)
         params.voice_volume = st.selectbox(
             tr("Speech Volume"),
-            options=[0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0],
-            index=2,
+            options=voice_volume_options,
+            index=option_index(voice_volume_options, saved_voice_volume, 2),
         )
+        config.ui["voice_volume"] = params.voice_volume
 
+        voice_rate_options = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0]
+        saved_voice_rate = config.ui.get("voice_rate", 1.0)
         params.voice_rate = st.selectbox(
             tr("Speech Rate"),
-            options=[0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0],
-            index=2,
+            options=voice_rate_options,
+            index=option_index(voice_rate_options, saved_voice_rate, 2),
         )
+        config.ui["voice_rate"] = params.voice_rate
 
         custom_audio_file_types = ["mp3", "wav", "m4a", "aac", "flac", "ogg"]
         uploaded_audio_file = st.file_uploader(
@@ -881,9 +1098,10 @@ with middle_panel:
             (tr("Random Background Music"), "random"),
             (tr("Custom Background Music"), "custom"),
         ]
+        saved_bgm_type = config.ui.get("bgm_type", "random")
         selected_index = st.selectbox(
             tr("Background Music"),
-            index=1,
+            index=option_index(bgm_options, saved_bgm_type, 1),
             options=range(
                 len(bgm_options)
             ),  # Use the index as the internal option value
@@ -893,6 +1111,7 @@ with middle_panel:
         )
         # Get the selected background music type
         params.bgm_type = bgm_options[selected_index][1]
+        config.ui["bgm_type"] = params.bgm_type
 
         # Show or hide components based on the selection
         if params.bgm_type == "custom":
@@ -902,18 +1121,25 @@ with middle_panel:
             if custom_bgm_file and os.path.exists(custom_bgm_file):
                 params.bgm_file = custom_bgm_file
                 # st.write(f":red[已选择自定义背景音乐]：**{custom_bgm_file}**")
+        bgm_volume_options = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        saved_bgm_volume = config.ui.get("bgm_volume", 0.2)
         params.bgm_volume = st.selectbox(
             tr("Background Music Volume"),
-            options=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-            index=2,
+            options=bgm_volume_options,
+            index=option_index(bgm_volume_options, saved_bgm_volume, 2),
         )
+        config.ui["bgm_volume"] = params.bgm_volume
 
 with right_panel:
     with st.container(border=True):
         st.write(tr("Subtitle Settings"))
-        params.subtitle_enabled = st.checkbox(tr("Enable Subtitles"), value=True)
+        params.subtitle_enabled = st.checkbox(
+            tr("Enable Subtitles"),
+            value=bool(config.ui.get("subtitle_enabled", True)),
+        )
+        config.ui["subtitle_enabled"] = params.subtitle_enabled
         font_names = get_all_fonts()
-        saved_font_name = config.ui.get("font_name", "MicrosoftYaHeiBold.ttc")
+        saved_font_name = config.ui.get("font_name", "NotoSansThai-Regular.ttf")
         saved_font_name_index = 0
         if saved_font_name in font_names:
             saved_font_name_index = font_names.index(saved_font_name)
@@ -974,9 +1200,93 @@ with right_panel:
 
         stroke_cols = st.columns([0.3, 0.7])
         with stroke_cols[0]:
-            params.stroke_color = st.color_picker(tr("Stroke Color"), "#000000")
+            saved_stroke_color = config.ui.get("stroke_color", "#000000")
+            params.stroke_color = st.color_picker(tr("Stroke Color"), saved_stroke_color)
+            config.ui["stroke_color"] = params.stroke_color
         with stroke_cols[1]:
-            params.stroke_width = st.slider(tr("Stroke Width"), 0.0, 10.0, 1.5)
+            saved_stroke_width = float(config.ui.get("stroke_width", 1.5))
+            params.stroke_width = st.slider(
+                tr("Stroke Width"), 0.0, 10.0, saved_stroke_width
+            )
+            config.ui["stroke_width"] = params.stroke_width
+
+        saved_text_background_enabled = config.ui.get("text_background_color", True)
+        if isinstance(saved_text_background_enabled, str):
+            saved_text_background_enabled = (
+                saved_text_background_enabled.strip().lower()
+                not in ("0", "false", "no", "off")
+            )
+        params.text_background_color = st.checkbox(
+            tr("Subtitle Background"), value=bool(saved_text_background_enabled)
+        )
+        config.ui["text_background_color"] = params.text_background_color
+
+    with st.container(border=True):
+        st.write(tr("Subtitle Editor"))
+        subtitle_action_cols = st.columns(2)
+        if subtitle_action_cols[0].button(
+            tr("Generate Subtitle Draft"), use_container_width=True
+        ):
+            if not params.video_subject and not params.video_script:
+                st.error(tr("Video Script and Subject Cannot Both Be Empty"))
+            elif uploaded_audio_file:
+                st.warning(
+                    tr("Subtitle draft requires generated TTS audio, not custom audio.")
+                )
+            else:
+                draft_task_id = str(uuid4())
+                draft_params = params.model_copy(deep=True)
+                draft_params.preview_duration = 0
+                draft_params.custom_subtitle_file = None
+                with st.spinner(tr("Generating Subtitle Draft")):
+                    result = tm.start(
+                        task_id=draft_task_id,
+                        params=draft_params,
+                        stop_at="subtitle",
+                    )
+                subtitle_path = (result or {}).get("subtitle_path", "")
+                if subtitle_path and os.path.exists(subtitle_path):
+                    with open(subtitle_path, "r", encoding="utf-8") as f:
+                        st.session_state["subtitle_editor_text"] = f.read().strip()
+                    st.session_state.pop("subtitle_editor_text_area", None)
+                    st.session_state["subtitle_editor_task_id"] = draft_task_id
+                    st.success(tr("Subtitle Draft Ready"))
+                    st.rerun()
+                else:
+                    st.error(tr("Subtitle Draft Failed"))
+
+        if subtitle_action_cols[1].button(
+            tr("Clear Subtitle Draft"), use_container_width=True
+        ):
+            st.session_state["subtitle_editor_text"] = ""
+            st.session_state.pop("subtitle_editor_text_area", None)
+            st.session_state["subtitle_editor_task_id"] = ""
+            st.rerun()
+
+        edited_subtitle = st.text_area(
+            tr("Edit Subtitle SRT"),
+            value=st.session_state.get("subtitle_editor_text", ""),
+            height=280,
+            key="subtitle_editor_text_area",
+        )
+        st.session_state["subtitle_editor_text"] = edited_subtitle
+
+        split_cols = st.columns(2)
+        if split_cols[0].button(
+            tr("Split Long Thai Lines"), use_container_width=True
+        ):
+            st.session_state["subtitle_editor_text"] = subtitle.split_long_lines(
+                st.session_state.get("subtitle_editor_text", ""), max_chars=42
+            ).strip()
+            st.session_state.pop("subtitle_editor_text_area", None)
+            st.rerun()
+        split_cols[1].download_button(
+            tr("Download Subtitle SRT"),
+            data=(st.session_state.get("subtitle_editor_text", "").strip() + "\n"),
+            file_name="subtitle-edited.srt",
+            mime="text/plain",
+            use_container_width=True,
+        )
     with st.expander(tr("Click to show API Key management"), expanded=False):
         st.subheader(tr("Manage Pexels and Pixabay API Keys"))
 
@@ -1041,10 +1351,21 @@ with right_panel:
                     config.save_config()
                     st.success(tr("Pixabay API Key deleted successfully"))
 
-start_button = st.button(tr("Generate Video"), use_container_width=True, type="primary")
-if start_button:
+action_cols = st.columns(2)
+preview_button = action_cols[0].button(
+    tr("Preview First 10 Seconds"), use_container_width=True
+)
+start_button = action_cols[1].button(
+    tr("Generate Video"), use_container_width=True, type="primary"
+)
+run_mode = "preview" if preview_button else "video" if start_button else ""
+if run_mode:
     config.save_config()
     task_id = str(uuid4())
+    if run_mode == "preview":
+        params.preview_duration = 10
+        params.video_count = 1
+
     if not params.video_subject and not params.video_script:
         st.error(tr("Video Script and Subject Cannot Both Be Empty"))
         scroll_to_bottom()
@@ -1065,49 +1386,9 @@ if start_button:
         scroll_to_bottom()
         st.stop()
 
-    if uploaded_audio_file:
-        task_dir = utils.task_dir(task_id)
-        # 上传文件名来自浏览器，不能直接拼到磁盘路径里；这里只保留扩展名，
-        # 并使用固定文件名保存到当前任务目录，避免路径穿越或特殊字符问题。
-        _, audio_ext = os.path.splitext(os.path.basename(uploaded_audio_file.name))
-        audio_ext = audio_ext.lower() or ".mp3"
-        custom_audio_path = os.path.join(task_dir, f"custom-audio{audio_ext}")
-        with open(custom_audio_path, "wb") as f:
-            f.write(uploaded_audio_file.getbuffer())
-        params.custom_audio_file = custom_audio_path
-
-    if uploaded_files:
-        local_videos_dir = utils.storage_dir("local_videos", create=True)
-        # 每次重新上传时都以本次选择的素材为准，避免旧素材不断重复追加。
-        params.video_materials = []
-        persisted_local_materials = []
-        for file in uploaded_files:
-            file_path = os.path.join(local_videos_dir, f"{file.file_id}_{file.name}")
-            with open(file_path, "wb") as f:
-                f.write(file.getbuffer())
-                m = MaterialInfo()
-                m.provider = "local"
-                m.url = file_path
-                params.video_materials.append(m)
-                persisted_local_materials.append(
-                    {
-                        "provider": m.provider,
-                        "url": m.url,
-                        "duration": m.duration,
-                    }
-                )
-        # 将已上传并保存到本地的视频素材写入会话，供后续只改文案时直接复用。
-        st.session_state["local_video_materials"] = persisted_local_materials
-    elif params.video_source == "local" and st.session_state["local_video_materials"]:
-        # 当用户没有重新上传文件时，复用最近一次已经保存到磁盘的本地素材列表。
-        params.video_materials = []
-        for material in st.session_state["local_video_materials"]:
-            m = MaterialInfo()
-            m.provider = material.get("provider", "local")
-            m.url = material.get("url", "")
-            m.duration = material.get("duration", 0)
-            if m.url:
-                params.video_materials.append(m)
+    save_uploaded_audio_file(task_id, params, uploaded_audio_file)
+    attach_local_materials(params, uploaded_files)
+    attach_edited_subtitle(task_id, params)
 
     log_container = st.empty()
     log_records = []
@@ -1121,20 +1402,34 @@ if start_button:
 
     logger.add(log_received)
 
-    st.toast(tr("Generating Video"))
-    logger.info(tr("Start Generating Video"))
+    if run_mode == "preview":
+        st.toast(tr("Generating Preview"))
+        logger.info(tr("Start Generating Preview"))
+    else:
+        st.toast(tr("Generating Video"))
+        logger.info(tr("Start Generating Video"))
     logger.info(utils.to_json(params))
     scroll_to_bottom()
 
     result = tm.start(task_id=task_id, params=params)
     if not result or "videos" not in result:
-        st.error(tr("Video Generation Failed"))
-        logger.error(tr("Video Generation Failed"))
+        failed_message = (
+            tr("Preview Generation Failed")
+            if run_mode == "preview"
+            else tr("Video Generation Failed")
+        )
+        st.error(failed_message)
+        logger.error(failed_message)
         scroll_to_bottom()
         st.stop()
 
     video_files = result.get("videos", [])
-    st.success(tr("Video Generation Completed"))
+    completed_message = (
+        tr("Preview Generation Completed")
+        if run_mode == "preview"
+        else tr("Video Generation Completed")
+    )
+    st.success(completed_message)
     try:
         if video_files:
             player_cols = st.columns(len(video_files) * 2 + 1)
@@ -1144,7 +1439,7 @@ if start_button:
         pass
 
     open_task_folder(task_id)
-    logger.info(tr("Video Generation Completed"))
+    logger.info(completed_message)
     scroll_to_bottom()
 
 config.save_config()

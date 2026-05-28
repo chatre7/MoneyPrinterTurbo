@@ -1884,6 +1884,46 @@ def _build_subtitle_formatter():
     return formatter
 
 
+def _split_long_subtitle_lines(
+    script_lines: list[str], max_chars: int = 42
+) -> list[str]:
+    """
+    Split long script lines into subtitle-sized chunks.
+
+    Some languages, including Thai, often use spaces between phrases but may not
+    include sentence-ending punctuation in generated scripts. If we keep the
+    whole paragraph as one target line, the generated SRT contains one cue that
+    stays on screen for most of the video.
+    """
+    normalized_lines = []
+    for line in script_lines:
+        line = " ".join((line or "").split())
+        if not line:
+            continue
+        if len(line) <= max_chars:
+            normalized_lines.append(line)
+            continue
+
+        words = line.split()
+        if len(words) <= 1:
+            normalized_lines.append(line)
+            continue
+
+        current_line = ""
+        for word in words:
+            candidate = f"{current_line} {word}".strip()
+            if current_line and len(candidate) > max_chars:
+                normalized_lines.append(current_line)
+                current_line = word
+            else:
+                current_line = candidate
+
+        if current_line:
+            normalized_lines.append(current_line)
+
+    return normalized_lines
+
+
 def _match_script_line(script_lines: list[str], current_text: str, sub_index: int) -> str:
     """
     尝试把当前累计的字幕文本，与脚本中的某一条标准断句匹配起来。
@@ -1904,8 +1944,12 @@ def _match_script_line(script_lines: list[str], current_text: str, sub_index: in
     if current_text == target_line:
         return target_line.strip()
 
-    current_text_normalized = re.sub(r"[^\w\s]", "", current_text)
-    target_line_normalized = re.sub(r"[^\w\s]", "", target_line)
+    current_text_normalized = " ".join(
+        re.sub(r"[^\w\s]", "", current_text).split()
+    )
+    target_line_normalized = " ".join(
+        re.sub(r"[^\w\s]", "", target_line).split()
+    )
     if current_text_normalized == target_line_normalized:
         return target_line.strip()
 
@@ -2053,7 +2097,7 @@ def create_subtitle(sub_maker: SubMaker, text: str, subtitle_file: str):
     3. 生成新的字幕文件
     """
     text = _format_text(text)
-    script_lines = utils.split_string_by_punctuations(text)
+    script_lines = _split_long_subtitle_lines(utils.split_string_by_punctuations(text))
     try:
         if hasattr(sub_maker, "cues") and sub_maker.cues:
             sub_items = _build_subtitle_items_from_edge_cues(sub_maker, script_lines)

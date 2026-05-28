@@ -161,7 +161,87 @@ def file_to_subtitles(filename):
                 current_times, current_text = None, ""
             elif current_times:
                 current_text += line
+    if current_times:
+        index += 1
+        times_texts.append((index, current_times.strip(), current_text.strip()))
     return times_texts
+
+
+def _srt_time_to_seconds(time_text: str) -> float:
+    hours, minutes, seconds = time_text.replace(",", ".").split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def _split_subtitle_text(text: str, max_chars: int) -> list[str]:
+    text = " ".join((text or "").split())
+    if not text or len(text) <= max_chars:
+        return [text] if text else []
+
+    words = text.split()
+    if len(words) <= 1:
+        return [text]
+
+    chunks = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = word
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def split_long_lines(srt_text: str, max_chars: int = 42) -> str:
+    """
+    Split long SRT cues into shorter cues with proportional timing.
+
+    This is intentionally conservative: it only splits on spaces, so existing
+    line breaks and cue timing remain predictable for Thai and English scripts.
+    """
+    blocks = re.split(r"\n\s*\n", (srt_text or "").strip())
+    output_blocks = []
+    index = 1
+
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 3:
+            continue
+
+        time_line = next((line for line in lines if " --> " in line), "")
+        if not time_line:
+            continue
+
+        start_text, end_text = [part.strip() for part in time_line.split(" --> ", 1)]
+        text_start_index = lines.index(time_line) + 1
+        text = " ".join(lines[text_start_index:]).strip()
+        chunks = _split_subtitle_text(text, max_chars=max_chars)
+        if not chunks:
+            continue
+
+        start_seconds = _srt_time_to_seconds(start_text)
+        end_seconds = _srt_time_to_seconds(end_text)
+        duration = max(end_seconds - start_seconds, 0.001)
+        chunk_duration = duration / len(chunks)
+
+        for chunk_index, chunk in enumerate(chunks):
+            chunk_start = start_seconds + chunk_duration * chunk_index
+            chunk_end = (
+                end_seconds
+                if chunk_index == len(chunks) - 1
+                else chunk_start + chunk_duration
+            )
+            output_blocks.append(
+                utils.text_to_srt(index, chunk, chunk_start, chunk_end).strip()
+            )
+            index += 1
+
+    return "\n\n".join(output_blocks) + ("\n" if output_blocks else "")
 
 
 def levenshtein_distance(s1, s2):

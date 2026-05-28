@@ -56,6 +56,15 @@ audio_bitrate = "192k"
 video_codec = "libx264"
 fps = 30
 _BGM_EXTENSIONS = (".mp3",)
+_DEFAULT_SUBTITLE_FONT = "NotoSansThai-Regular.ttf"
+_THAI_FALLBACK_FONT = "NotoSansThai-Regular.ttf"
+_THAI_UNSUPPORTED_FONTS = {
+    "MicrosoftYaHeiBold.ttc",
+    "MicrosoftYaHeiNormal.ttc",
+    "STHeitiLight.ttc",
+    "STHeitiMedium.ttc",
+    "UTM Kabel KT.ttf",
+}
 
 
 def get_ffmpeg_binary():
@@ -79,6 +88,52 @@ def get_ffmpeg_binary():
         logger.warning(f"failed to resolve bundled ffmpeg binary: {str(exc)}")
 
     return "ffmpeg"
+
+
+def _contains_thai_text(text: str) -> bool:
+    return any("\u0e00" <= char <= "\u0e7f" for char in text or "")
+
+
+def _read_subtitle_text(subtitle_path: str) -> str:
+    if not subtitle_path or not os.path.exists(subtitle_path):
+        return ""
+
+    try:
+        with open(subtitle_path, "r", encoding="utf-8") as subtitle_file:
+            return subtitle_file.read()
+    except Exception as exc:
+        logger.warning(f"failed to read subtitle text for font detection: {str(exc)}")
+        return ""
+
+
+def _resolve_subtitle_font_path(font_name: str, subtitle_path: str = "") -> str:
+    resolved_font_name = font_name or _DEFAULT_SUBTITLE_FONT
+    font_path = os.path.join(utils.font_dir(), resolved_font_name)
+    if not os.path.exists(font_path):
+        logger.warning(
+            f"subtitle font not found: {resolved_font_name}, "
+            f"fallback to {_DEFAULT_SUBTITLE_FONT}"
+        )
+        resolved_font_name = _DEFAULT_SUBTITLE_FONT
+        font_path = os.path.join(utils.font_dir(), resolved_font_name)
+    subtitle_text = _read_subtitle_text(subtitle_path)
+
+    if (
+        _contains_thai_text(subtitle_text)
+        and os.path.basename(resolved_font_name) in _THAI_UNSUPPORTED_FONTS
+    ):
+        fallback_path = os.path.join(utils.font_dir(), _THAI_FALLBACK_FONT)
+        if os.path.exists(fallback_path):
+            logger.warning(
+                f"Thai subtitle text detected, fallback subtitle font from "
+                f"{resolved_font_name} to {_THAI_FALLBACK_FONT}"
+            )
+            font_path = fallback_path
+
+    if os.name == "nt":
+        font_path = font_path.replace("\\", "/")
+
+    return font_path
 
 
 def _escape_ffmpeg_concat_path(file_path: str) -> str:
@@ -527,12 +582,10 @@ def generate_video(
 
     font_path = ""
     if params.subtitle_enabled:
-        if not params.font_name:
-            params.font_name = "STHeitiMedium.ttc"
-        font_path = os.path.join(utils.font_dir(), params.font_name)
-        if os.name == "nt":
-            font_path = font_path.replace("\\", "/")
-
+        font_path = _resolve_subtitle_font_path(
+            font_name=params.font_name,
+            subtitle_path=subtitle_path,
+        )
         logger.info(f"  ⑤ font: {font_path}")
 
     def resolve_subtitle_background_color():
@@ -601,6 +654,12 @@ def generate_video(
     audio_clip = AudioFileClip(audio_path).with_effects(
         [afx.MultiplyVolume(params.voice_volume)]
     )
+    preview_duration = int(getattr(params, "preview_duration", 0) or 0)
+    if preview_duration > 0:
+        clip_duration = min(preview_duration, video_clip.duration, audio_clip.duration)
+        logger.info(f"  ⑥ preview duration: {clip_duration:.2f}s")
+        video_clip = video_clip.subclipped(0, clip_duration)
+        audio_clip = audio_clip.subclipped(0, clip_duration)
 
     def make_textclip(text):
         return TextClip(
